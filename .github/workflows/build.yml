@@ -1,44 +1,108 @@
-name: Android Studio Build APK
+name: Web2APK Build
 
 on:
   workflow_dispatch:
     inputs:
-      chat_id:
-        description: 'Telegram Chat ID'
+      url:
+        description: "Website URL"
+        required: false
+      app_name:
+        description: "Application Name"
         required: true
-      file_name:
-        description: 'Project File Name'
+      package_name:
+        description: "Package Name"
         required: true
+      user_id:
+        description: "Telegram User ID"
+        required: true
+      zip_url:
+        description: "ZIP Project URL"
+        required: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Prepare Project
+      - name: Setup Flutter
+        if: ${{ github.event.inputs.zip_url != '' }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.29.0"
+
+      - name: Download Project
+        if: ${{ github.event.inputs.zip_url != '' }}
         run: |
-          unzip ${{ github.event.inputs.file_name }}
+          wget "${{ github.event.inputs.zip_url }}" -O project.zip
+          unzip -o project.zip -d project
+
+      - name: Find Project
+        if: ${{ github.event.inputs.zip_url != '' }}
+        run: |
+          cd project
+
+          if [ -f pubspec.yaml ]; then
+            echo "TYPE=flutter" >> $GITHUB_ENV
+            echo "DIR=$(pwd)" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          DIR=$(find . -name pubspec.yaml | head -1)
+
+          if [ "$DIR" != "" ]; then
+            echo "TYPE=flutter" >> $GITHUB_ENV
+            echo "DIR=$(dirname "$DIR")" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          DIR=$(find . -name gradlew | head -1)
+
+          if [ "$DIR" != "" ]; then
+            echo "TYPE=android" >> $GITHUB_ENV
+            echo "DIR=$(dirname "$DIR")" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "Project tidak dikenali"
+          exit 1
+
+      - name: Build Flutter
+        if: env.TYPE == 'flutter'
+        run: |
+          cd "$DIR"
+          flutter pub get
+          flutter build apk --release
+
+      - name: Build Android Studio
+        if: env.TYPE == 'android'
+        run: |
+          cd "$DIR"
           chmod +x gradlew
+          ./gradlew assembleRelease
 
-      # Proses Build untuk Android Studio
-      - name: Build with Gradle
-        run: ./gradlew assembleRelease
-
-      - name: Send APK to Telegram
+      - name: Find APK
         run: |
-          # Mencari file APK secara otomatis di folder build
-          APK_PATH=$(find app/build/outputs/apk/release/ -name "*.apk" | head -n 1)
-          curl -v -F "chat_id=${{ github.event.inputs.chat_id }}" \
-               -F "document=@$APK_PATH" \
-               -F "caption=✅ *Build Android Studio Berhasil!*" \
-               https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument
-               
+          APK=$(find project -name "*.apk" | head -1)
+
+          if [ "$APK" = "" ]; then
+            echo "APK tidak ditemukan"
+            exit 1
+          fi
+
+          echo "APK=$APK" >> $GITHUB_ENV
+
+      - name: Send APK
+        run: |
+          curl -F chat_id=${{ github.event.inputs.user_id }} \
+          -F document=@"$APK" \
+          -F caption="✅ Build Berhasil : ${{ github.event.inputs.app_name }}" \
+          https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument
